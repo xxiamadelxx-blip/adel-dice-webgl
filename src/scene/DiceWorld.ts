@@ -300,7 +300,7 @@ export class DiceWorld {
 
     this.tableSurface = new THREE.Mesh(
       new THREE.BoxGeometry(24, 0.5, 29),
-      new THREE.MeshStandardMaterial({ color: 0x1a1714, roughness: 0.88 }),
+      new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.3 }),
     )
     this.tableSurface.name = 'table-surface'
     this.tableSurface.position.y = -0.72
@@ -366,6 +366,7 @@ export class DiceWorld {
     }
 
     this.trayGroup = group
+    this.trayGroup.visible = false
     this.scene.add(group)
   }
 
@@ -376,10 +377,8 @@ export class DiceWorld {
     this.host.style.backgroundSize = 'cover'
     this.host.style.backgroundPosition = 'center'
     if (this.tableSurface) {
-      const material = this.tableSurface.material as THREE.MeshStandardMaterial
-      material.color.set(this._skinSelection.background === 'ivy' ? '#41392b' : skin.color)
-      material.opacity = this._skinSelection.background === 'ivy' ? 0.74 : 1
-      material.transparent = this._skinSelection.background === 'ivy'
+      const material = this.tableSurface.material as THREE.ShadowMaterial
+      material.opacity = 0.3
       material.needsUpdate = true
     }
   }

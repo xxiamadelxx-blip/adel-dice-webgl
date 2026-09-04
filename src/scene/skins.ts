@@ -139,7 +139,7 @@ export type SkinSelection = {
 }
 
 export const DEFAULT_SKINS: SkinSelection = {
-  background: 'ivy',
+  background: 'slate',
   tray: 'black-gold',
   tower: 'treewood',
   dice: 'obsidian',

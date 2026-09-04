@@ -59,7 +59,7 @@ describe('Prototype', () => {
     await user.click(screen.getByRole('button', { name: /бычья кровь/i }))
 
     expect(world.setSkins).toHaveBeenLastCalledWith({
-      background: 'ivy',
+      background: 'slate',
       tray: 'oxblood',
       tower: 'treewood',
       dice: 'obsidian',

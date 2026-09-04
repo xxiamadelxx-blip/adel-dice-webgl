@@ -2,6 +2,7 @@
 
 ## Adel Dice Product Decisions
 
+- `AdelDiceRoll_ALPHA_4_0_0_PRODUCTION.html` is the quality baseline for the main scene. Preserve its physical octagonal tray artwork, dark textile presentation, camera density, and restrained result treatment; improve it through independent skins rather than replacing it with simplified procedural tray geometry.
 - The supplied references are authoritative art direction: `references/tower-wooden-runic.jpg` for the optional tower, `references/tray-black-gold.jpg` for the tray, `references/dice-materials.jpg` for dice finishes, and `references/background-ivy-frame.jpg` for the default background.
 - Keep direct-to-tray and through-tower throws as explicit user-selectable modes. The tower must not permanently obscure the tray.
 - Background, tray, tower, and dice skins are independent selections and persist locally.

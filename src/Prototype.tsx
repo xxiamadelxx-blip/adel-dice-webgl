@@ -104,17 +104,19 @@ export default function Prototype({ worldFactory, entropy }: PrototypeProps) {
     <main
       className="dice-app"
       style={{
-        backgroundImage: 'image' in backgroundSkin ? `url("${backgroundSkin.image}")` : 'none',
+        backgroundImage:
+          'image' in backgroundSkin
+            ? `linear-gradient(rgba(2, 3, 3, 0.22), rgba(2, 3, 3, 0.58)), url("${backgroundSkin.image}")`
+            : `linear-gradient(rgba(2, 3, 3, 0.12), rgba(2, 3, 3, 0.5)), url("${assetUrl('assets/alpha4/black-textile-texture.webp')}")`,
       }}
       data-background={roller.skins.background}
+      data-tray={roller.skins.tray}
       data-profile="adel-dice-webgl-v1"
       data-status={roller.unsupportedReason ? 'unsupported' : 'ready'}
       data-fallback="false"
       data-phase={roller.phase}
       aria-label="Бросатель кубиков"
     >
-      <div className="scene-layer" ref={roller.sceneRef} data-testid="dice-scene" />
-
       <header className="dice-hud">
         <div className="brand-lockup" aria-label="Adel Dice">
           <span className="brand-mark">Ø</span>
@@ -149,29 +151,48 @@ export default function Prototype({ worldFactory, entropy }: PrototypeProps) {
         </div>
       </header>
 
-      <section className="result-panel" aria-live="polite">
-        <span className="result-kicker">
-          {roller.phase === 'rolling' ? 'КОСТИ В ДВИЖЕНИИ' : formatted?.notation ?? 'ГОТОВО К БРОСКУ'}
-        </span>
-        <strong className="result-total">
-          {roller.phase === 'rolling' ? '···' : formatted?.total ?? '—'}
-        </strong>
-        <span className="result-detail">
-          {roller.phase === 'rolling'
-            ? roller.throwMode === 'tower'
-              ? 'Падение через башню'
-              : 'Бросок в лоток'
-            : formatted?.detail ?? `${roller.quantity}${roller.selectedDie}`}
-        </span>
-      </section>
+      <section className="tray-area" aria-label="Лоток для броска">
+        <span className="tray-kicker">ЛОТОК</span>
+        <div className="tray-stage">
+          <img
+            className="physical-tray-art"
+            src={assetUrl('assets/alpha4/physical-tray.webp')}
+            alt=""
+            draggable={false}
+          />
+          <img
+            className="physical-tray-sigil"
+            src={assetUrl('assets/alpha4/tray-moth-sigil.webp')}
+            alt=""
+            draggable={false}
+          />
+          <div className="scene-layer" ref={roller.sceneRef} data-testid="dice-scene" />
 
-      {roller.unsupportedReason ? (
-        <section className="unsupported-panel" role="alert">
-          <CubeIcon />
-          <strong>3D нужен WebGL2</strong>
-          <span>{roller.unsupportedReason}. Числовой бросок остаётся доступен.</span>
-        </section>
-      ) : null}
+          <section className="result-panel" aria-live="polite">
+            <span className="result-kicker">
+              {roller.phase === 'rolling' ? 'КОСТИ В ДВИЖЕНИИ' : formatted?.notation ?? 'ГОТОВО К БРОСКУ'}
+            </span>
+            <strong className="result-total">
+              {roller.phase === 'rolling' ? '···' : formatted?.total ?? '—'}
+            </strong>
+            <span className="result-detail">
+              {roller.phase === 'rolling'
+                ? roller.throwMode === 'tower'
+                  ? 'Падение через башню'
+                  : 'Бросок в лоток'
+                : formatted?.detail ?? `${roller.quantity}${roller.selectedDie}`}
+            </span>
+          </section>
+
+          {roller.unsupportedReason ? (
+            <section className="unsupported-panel" role="alert">
+              <CubeIcon />
+              <strong>3D нужен WebGL2</strong>
+              <span>{roller.unsupportedReason}. Числовой бросок остаётся доступен.</span>
+            </section>
+          ) : null}
+        </div>
+      </section>
 
       <section className="control-dock" aria-label="Настройки броска">
         <Carousel className="die-carousel" contentClassName="die-carousel-content" ariaLabel="Тип кости">

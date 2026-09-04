@@ -45,7 +45,7 @@ describe('useDiceRoller', () => {
     act(() => result.current.updateSkin('tray', 'oxblood'))
 
     expect(result.current.skins).toEqual({
-      background: 'ivy',
+      background: 'slate',
       tray: 'oxblood',
       tower: 'treewood',
       dice: 'obsidian',

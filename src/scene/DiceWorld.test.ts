@@ -68,7 +68,7 @@ describe('DiceWorld lifecycle', () => {
     const { world } = createTestWorld()
     world.setSkins({ tray: 'oxblood' })
     expect(world.skinSelection).toEqual({
-      background: 'ivy',
+      background: 'slate',
       tray: 'oxblood',
       tower: 'treewood',
       dice: 'obsidian',
