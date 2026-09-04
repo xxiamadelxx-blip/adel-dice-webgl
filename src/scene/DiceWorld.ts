@@ -355,8 +355,8 @@ export class DiceWorld {
     const rimSpecs: Array<[number, number, number, number, number]> = [
       [0.16, 14.9, -6.2, 0, 0],
       [0.16, 14.9, 6.2, 0, 0],
-      [11.95, 0.16, 0, -7.6, Math.PI / 2],
-      [11.95, 0.16, 0, 7.6, Math.PI / 2],
+      [11.95, 0.16, 0, -7.6, 0],
+      [11.95, 0.16, 0, 7.6, 0],
     ]
     for (const [width, depth, x, z, rotation] of rimSpecs) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, depth), rimMaterial)
@@ -364,14 +364,6 @@ export class DiceWorld {
       rail.rotation.y = rotation
       group.add(rail)
     }
-
-    const emblem = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(2.15, 0)),
-      new THREE.LineBasicMaterial({ color: skin.accent, transparent: true, opacity: 0.32 }),
-    )
-    emblem.scale.set(1, 0.025, 1)
-    emblem.position.y = 0.025
-    group.add(emblem)
 
     this.trayGroup = group
     this.scene.add(group)

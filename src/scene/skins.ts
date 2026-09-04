@@ -1,9 +1,11 @@
+import { assetUrl } from '../assetUrl'
+
 export const SKIN_CATALOG = {
   background: {
     ivy: {
       name: 'Плющевый пергамент',
       color: '#d8cda6',
-      image: '/assets/backgrounds/ivy-parchment.jpg',
+      image: assetUrl('assets/backgrounds/ivy-parchment.jpg'),
     },
     slate: { name: 'Полуночный сланец', color: '#11171b' },
     walnut: { name: 'Тёплый орех', color: '#3d2418' },

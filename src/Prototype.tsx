@@ -13,6 +13,7 @@ import {
 } from '@radix-ui/react-icons'
 
 import { formatRoll, type DieType } from './core/dice'
+import { assetUrl } from './assetUrl'
 import type { EntropySource } from './core/random'
 import { useDiceRoller, type DiceWorldFactory } from './hooks/useDiceRoller'
 import { BottomSheet, Carousel } from './mobile'
@@ -61,14 +62,14 @@ function categoryOptions(category: SkinCategory): SkinOption[] {
         id,
         name: skin.name,
         color: skin.inner,
-        image: id === 'black-gold' ? '/assets/references/tray.jpg' : undefined,
+        image: id === 'black-gold' ? assetUrl('assets/references/tray.jpg') : undefined,
       }))
     case 'tower':
       return Object.entries(SKIN_CATALOG.tower).map(([id, skin]) => ({
         id,
         name: skin.name,
         color: skin.panel,
-        image: id === 'treewood' ? '/assets/references/tower.jpg' : undefined,
+        image: id === 'treewood' ? assetUrl('assets/references/tower.jpg') : undefined,
       }))
     case 'dice':
       return Object.entries(SKIN_CATALOG.dice).map(([id, skin]) => ({
@@ -90,6 +91,7 @@ export default function Prototype({ worldFactory, entropy }: PrototypeProps) {
   const [skinCategory, setSkinCategory] = useState<SkinCategory>('dice')
   const formatted = useMemo(() => (roller.result ? formatRoll(roller.result) : null), [roller.result])
   const skinOptions = useMemo(() => categoryOptions(skinCategory), [skinCategory])
+  const backgroundSkin = SKIN_CATALOG.background[roller.skins.background]
 
   const selectSkin = (category: SkinCategory, id: string): void => {
     if (category === 'background') roller.updateSkin('background', id as BackgroundSkinId)
@@ -101,6 +103,9 @@ export default function Prototype({ worldFactory, entropy }: PrototypeProps) {
   return (
     <main
       className="dice-app"
+      style={{
+        backgroundImage: 'image' in backgroundSkin ? `url("${backgroundSkin.image}")` : 'none',
+      }}
       data-background={roller.skins.background}
       data-profile="adel-dice-webgl-v1"
       data-status={roller.unsupportedReason ? 'unsupported' : 'ready'}
@@ -268,7 +273,7 @@ export default function Prototype({ worldFactory, entropy }: PrototypeProps) {
         {skinCategory === 'dice' ? (
           <img
             className="material-reference"
-            src="/assets/references/dice-materials.jpg"
+            src={assetUrl('assets/references/dice-materials.jpg')}
             alt="Референс материалов кубиков: камень, стекло и минералы"
             draggable={false}
           />

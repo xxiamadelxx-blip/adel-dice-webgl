@@ -16,7 +16,6 @@
 }
 
 .dice-app[data-background="ivy"] {
-  background-image: url('/assets/backgrounds/ivy-parchment.jpg');
   background-size: cover;
   background-position: center;
 }
@@ -388,4 +387,64 @@ button:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .roll-button:active { transform: none; }
+}
+
+@media (max-width: 800px) {
+  .phone-stage {
+    display: block;
+    width: 100vw;
+    height: 100dvh;
+    padding: 0;
+  }
+
+  .device-menu-bar,
+  .phone-bezel,
+  .device-camera,
+  .status-bar,
+  .home-indicator-svg,
+  .android-navigation-bar {
+    display: none !important;
+  }
+
+  .phone-scale-box {
+    width: 100vw !important;
+    height: 100dvh !important;
+  }
+
+  .phone-device {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    transform: none !important;
+  }
+
+  .device-screen {
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    border-radius: 0 !important;
+    cursor: auto !important;
+  }
+
+  .device-screen,
+  .device-screen * {
+    cursor: auto !important;
+  }
+
+  .mobile-app-viewport {
+    inset: 0 !important;
+  }
+
+  .dice-hud {
+    top: 0;
+  }
+
+  .result-panel {
+    top: 70px;
+  }
+
+  .control-dock {
+    bottom: max(8px, env(safe-area-inset-bottom));
+  }
 }
