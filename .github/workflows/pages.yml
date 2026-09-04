@@ -29,6 +29,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Refresh and show runtime lock
+        run: npm run update:runtime-lock && git diff -- mobile-runtime.lock.json
       - run: npm test
       - run: npm run build
       - if: github.ref == 'refs/heads/main'
