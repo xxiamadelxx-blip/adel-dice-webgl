@@ -1,0 +1,257 @@
+name: Build Laya resumable downloader APK
+
+on:
+  push:
+    branches:
+      - ci/laya-resumable-downloader-20260922
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fetch official Laya Android sample
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          git clone --depth 1 https://huggingface.co/litert-community/Laya-Multilingual-LiteRT.git laya-hf
+          chmod +x laya-hf/android/gradlew
+
+      - name: Add resumable downloader and Russian defaults
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > laya-hf/android/app/src/main/java/com/laya/ModelDownloader.kt <<'KOTLIN'
+          // SPDX-License-Identifier: Apache-2.0
+          package com.laya
+
+          import android.content.Context
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.io.IOException
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import kotlin.math.min
+
+          object ModelDownloader {
+            private const val BASE =
+              "https://huggingface.co/litert-community/Laya-Multilingual-LiteRT/resolve/main"
+            private const val CHUNK_BYTES = 16L * 1024L * 1024L
+            private const val MAX_RETRIES = 10
+
+            private val wfp16 = linkedMapOf(
+              "laya_ml_s256_embeds_wfp16.tflite" to 250_889_408L,
+              "laya_ml_act_head_fp32.tflite" to 795_816L,
+              "laya_ml_calibration.json" to 9_156L,
+              "tokenizer.json" to 34_363_188L,
+              "token_embeddings_fp16.bin" to 393_216_000L,
+              "token_embeddings.json" to 801L,
+            )
+
+            fun ensureInstalled(context: Context, storage: LayaEngine.Storage) {
+              check(storage == LayaEngine.Storage.WFP16) {
+                "Эта сборка пока загружает только модель WFP16."
+              }
+
+              wfp16.forEach { (name, expectedBytes) ->
+                val dest = File(context.filesDir, name)
+                if (dest.isFile && dest.length() == expectedBytes) return@forEach
+
+                val part = File(context.filesDir, "$name.part")
+                if (part.length() > expectedBytes) part.delete()
+
+                downloadResumable(name, expectedBytes, part)
+
+                check(part.length() == expectedBytes) {
+                  "Файл $name скачан не полностью: ${part.length()} / $expectedBytes байт"
+                }
+
+                if (dest.exists()) dest.delete()
+                check(part.renameTo(dest)) { "Не удалось установить файл $name" }
+              }
+            }
+
+            private fun downloadResumable(name: String, expectedBytes: Long, part: File) {
+              var retries = 0
+
+              while (part.length() < expectedBytes) {
+                val start = part.length()
+                val end = min(start + CHUNK_BYTES - 1L, expectedBytes - 1L)
+
+                try {
+                  downloadChunk(name, part, start, end, expectedBytes)
+                  retries = 0
+                } catch (failure: IOException) {
+                  retries += 1
+                  if (retries >= MAX_RETRIES) {
+                    throw IOException(
+                      "Не удалось скачать $name после $MAX_RETRIES попыток. " +
+                        "Скачано ${part.length()} / $expectedBytes байт. " +
+                        "Перезапусти приложение, загрузка продолжится.",
+                      failure,
+                    )
+                  }
+                  Thread.sleep((1_000L * retries).coerceAtMost(8_000L))
+                }
+              }
+            }
+
+            private fun downloadChunk(
+              name: String,
+              part: File,
+              start: Long,
+              end: Long,
+              expectedBytes: Long,
+            ) {
+              val connection =
+                (URL("$BASE/$name?download=true").openConnection() as HttpURLConnection).apply {
+                  instanceFollowRedirects = true
+                  connectTimeout = 30_000
+                  readTimeout = 45_000
+                  requestMethod = "GET"
+                  setRequestProperty("User-Agent", "Laya-Android-Sample/0.2")
+                  setRequestProperty("Accept-Encoding", "identity")
+                  if (start > 0L || end < expectedBytes - 1L) {
+                    setRequestProperty("Range", "bytes=$start-$end")
+                  }
+                }
+
+              try {
+                connection.connect()
+                val code = connection.responseCode
+                check(code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_PARTIAL) {
+                  "Ошибка загрузки $name: HTTP $code"
+                }
+
+                // A resumed request must be honored as 206. If a server unexpectedly
+                // returns 200 for a non-zero offset, restarting this file is safer
+                // than appending a full object onto a partial object.
+                if (start > 0L && code != HttpURLConnection.HTTP_PARTIAL) {
+                  part.delete()
+                  throw IOException("Сервер не поддержал докачку $name; начинаю файл заново")
+                }
+
+                val append = start > 0L && code == HttpURLConnection.HTTP_PARTIAL
+                FileOutputStream(part, append).use { output ->
+                  connection.inputStream.use { input ->
+                    val buffer = ByteArray(1024 * 1024)
+                    var remaining = end - start + 1L
+
+                    while (remaining > 0L) {
+                      val want = min(buffer.size.toLong(), remaining).toInt()
+                      val count = input.read(buffer, 0, want)
+                      if (count < 0) break
+                      output.write(buffer, 0, count)
+                      remaining -= count.toLong()
+                    }
+                    output.fd.sync()
+                  }
+                }
+
+                if (part.length() > expectedBytes) {
+                  part.delete()
+                  throw IOException("Сервер вернул лишние данные для $name; файл сброшен")
+                }
+              } finally {
+                connection.disconnect()
+              }
+            }
+          }
+          KOTLIN
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          vm = Path("laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt")
+          text = vm.read_text()
+          if "ModelDownloader.ensureInstalled(context, storage)" not in text:
+              text, count = re.subn(
+                  r"(?m)^(\s*)val requiredFiles\s*=",
+                  r"\1ModelDownloader.ensureInstalled(context, storage)\n\1val requiredFiles =",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not patch MainViewModel")
+
+          text = text.replace(
+              "inputSubject = context.getString(R.string.example_email_ja_subject)",
+              'inputSubject = "Тест Laya"',
+          )
+          text = text.replace(
+              "inputText = context.getString(R.string.example_email_ja_body)",
+              'inputText = "Нужно решить, какое действие выбрать для этого примера."',
+          )
+          vm.write_text(text)
+
+          manifest = Path("laya-hf/android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+          if 'android.permission.INTERNET' not in text:
+              marker = "<application"
+              if marker not in text:
+                  raise SystemExit("Invalid AndroidManifest.xml")
+              text = text.replace(
+                  marker,
+                  '    <uses-permission android:name="android.permission.INTERNET" />\n\n    <application',
+                  1,
+              )
+          manifest.write_text(text)
+
+          strings = Path("laya-hf/android/app/src/main/res/values/strings.xml")
+          text = strings.read_text()
+          replacements = {
+              "Model unavailable": "Модель недоступна",
+              "Preset: Email triage": "Сценарий: сортировка писем",
+              "Example": "Пример",
+              "Accelerator": "Ускоритель",
+              "Probability calibration": "Калибровка вероятности",
+              "calibrated": "включена",
+              "Run": "Запустить",
+              "Loading tokenizer…": "Загрузка токенизатора…",
+              "Loading model…": "Загрузка модели…",
+              "Ready": "Готово",
+              "Error": "Ошибка",
+          }
+          for src, dst in replacements.items():
+              text = text.replace(f">{src}<", f">{dst}<")
+          strings.write_text(text)
+          PY
+
+      - name: Build and verify APK
+        working-directory: laya-hf/android
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./gradlew --no-daemon clean :app:assembleDebug
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-resumable-ru-debug
+          path: laya-hf/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
