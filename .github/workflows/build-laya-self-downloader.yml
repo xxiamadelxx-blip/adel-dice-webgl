@@ -1,0 +1,172 @@
+name: Build Laya self-downloading APK
+
+on:
+  push:
+    branches:
+      - ci/laya-self-downloader-20260922
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fetch official Laya Android sample
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          git clone --depth 1 https://huggingface.co/litert-community/Laya-Multilingual-LiteRT.git laya-hf
+          chmod +x laya-hf/android/gradlew
+
+      - name: Add on-device model downloader
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > laya-hf/android/app/src/main/java/com/laya/ModelDownloader.kt <<'KOTLIN'
+          // SPDX-License-Identifier: Apache-2.0
+          package com.laya
+
+          import android.content.Context
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          object ModelDownloader {
+            private const val BASE =
+              "https://huggingface.co/litert-community/Laya-Multilingual-LiteRT/resolve/main"
+
+            private val wfp16 = linkedMapOf(
+              "laya_ml_s256_embeds_wfp16.tflite" to 250_889_408L,
+              "laya_ml_act_head_fp32.tflite" to 795_816L,
+              "laya_ml_calibration.json" to 9_156L,
+              "tokenizer.json" to 34_363_188L,
+              "token_embeddings_fp16.bin" to 393_216_000L,
+              "token_embeddings.json" to 801L,
+            )
+
+            fun ensureInstalled(context: Context, storage: LayaEngine.Storage) {
+              check(storage == LayaEngine.Storage.WFP16) {
+                "This test APK currently downloads the WFP16 model only."
+              }
+
+              wfp16.forEach { (name, expectedBytes) ->
+                val dest = File(context.filesDir, name)
+                if (dest.isFile && dest.length() == expectedBytes) return@forEach
+
+                val part = File(context.filesDir, "$name.part")
+                if (part.exists()) part.delete()
+
+                val connection =
+                  (URL("$BASE/$name?download=true").openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    connectTimeout = 30_000
+                    readTimeout = 120_000
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "Laya-Android-Sample/0.1")
+                  }
+
+                try {
+                  connection.connect()
+                  check(connection.responseCode in 200..299) {
+                    "Download failed for $name: HTTP ${connection.responseCode}"
+                  }
+
+                  connection.inputStream.use { input ->
+                    FileOutputStream(part).use { output ->
+                      val buffer = ByteArray(4 * 1024 * 1024)
+                      while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                      }
+                      output.fd.sync()
+                    }
+                  }
+                } finally {
+                  connection.disconnect()
+                }
+
+                check(part.length() == expectedBytes) {
+                  "Downloaded $name has ${part.length()} bytes; expected $expectedBytes"
+                }
+
+                if (dest.exists()) dest.delete()
+                check(part.renameTo(dest)) { "Could not install downloaded file $name" }
+              }
+            }
+          }
+          KOTLIN
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          vm = Path("laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt")
+          text = vm.read_text()
+          if "ModelDownloader.ensureInstalled(context, storage)" not in text:
+              text, count = re.subn(
+                  r"(?m)^(\s*)val requiredFiles\s*=",
+                  r"\1ModelDownloader.ensureInstalled(context, storage)\n\1val requiredFiles =",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not patch MainViewModel")
+          vm.write_text(text)
+
+          manifest = Path("laya-hf/android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+          if 'android.permission.INTERNET' not in text:
+              text = text.replace(
+                  "<manifest",
+                  '<manifest',
+                  1,
+              )
+              # Insert directly after opening manifest tag.
+              idx = text.find(">")
+              if idx < 0:
+                  raise SystemExit("Invalid AndroidManifest.xml")
+              text = text[:idx+1] + '\n    <uses-permission android:name="android.permission.INTERNET" />' + text[idx+1:]
+          manifest.write_text(text)
+          PY
+
+          grep -n "ModelDownloader" laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt
+          grep -n "INTERNET" laya-hf/android/app/src/main/AndroidManifest.xml
+
+      - name: Build and verify APK
+        working-directory: laya-hf/android
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./gradlew --no-daemon clean :app:assembleDebug
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-self-downloader-debug
+          path: laya-hf/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
