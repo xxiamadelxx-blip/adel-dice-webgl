@@ -136,15 +136,14 @@ jobs:
           manifest = Path("laya-hf/android/app/src/main/AndroidManifest.xml")
           text = manifest.read_text()
           if 'android.permission.INTERNET' not in text:
-              text, count = re.subn(
-                  r'(<manifest\\b[^>]*>)',
-                  r'\\1\n    <uses-permission android:name="android.permission.INTERNET" />',
-                  text,
-                  count=1,
-                  flags=re.S,
-              )
-              if count != 1:
+              marker = "<application"
+              if marker not in text:
                   raise SystemExit("Invalid AndroidManifest.xml")
+              text = text.replace(
+                  marker,
+                  '    <uses-permission android:name="android.permission.INTERNET" />\n\n    <application',
+                  1,
+              )
           manifest.write_text(text)
           PY
 
