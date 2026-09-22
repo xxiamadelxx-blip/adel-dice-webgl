@@ -1,0 +1,438 @@
+name: Build final Laya Android APK
+
+on:
+  push:
+    branches:
+      - ci/laya-final-android-20260922
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fetch pinned upstream source
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://huggingface.co/litert-community/Laya-Multilingual-LiteRT.git laya-hf
+          chmod +x laya-hf/android/gradlew
+          git -C laya-hf rev-parse HEAD
+
+      - name: Generate verified model manifest and Android downloader
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, re, subprocess
+
+          root = Path("laya-hf")
+          app = root / "android/app"
+          files = [
+              "laya_ml_s256_embeds_wfp16.tflite",
+              "laya_ml_act_head_fp32.tflite",
+              "laya_ml_calibration.json",
+              "tokenizer.json",
+              "token_embeddings_fp16.bin",
+              "token_embeddings.json",
+          ]
+          rev = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+          rows = []
+          for name in files:
+              data = (root / name).read_bytes()
+              text = data.decode("utf-8", errors="ignore")
+              if text.startswith("version https://git-lfs.github.com/spec/v1"):
+                  sha = re.search(r"oid sha256:([0-9a-f]{64})", text).group(1)
+                  size = int(re.search(r"size (\d+)", text).group(1))
+              else:
+                  sha = hashlib.sha256(data).hexdigest()
+                  size = len(data)
+              rows.append((name, size, sha))
+
+          Path("model-manifest.tsv").write_text(
+              "\n".join(f"{n}\t{s}\t{h}" for n, s, h in rows) + "\n"
+          )
+
+          entries = "\n".join(
+              f'    "{n}" to Spec({s}L, "{h}"),' for n, s, h in rows
+          )
+          template = r'''// SPDX-License-Identifier: Apache-2.0
+          package com.laya
+
+          import android.app.DownloadManager
+          import android.content.Context
+          import android.net.Uri
+          import android.os.Environment
+          import java.io.File
+          import java.io.FileInputStream
+          import java.io.FileOutputStream
+          import java.io.IOException
+          import java.security.MessageDigest
+
+          object ModelDownloader {
+            private data class Spec(val size: Long, val sha256: String)
+            private const val BASE = "https://huggingface.co/litert-community/Laya-Multilingual-LiteRT/resolve/__REV__"
+            private const val MAX_REQUEUES = 3
+
+            private val files = linkedMapOf(
+          __ENTRIES__
+            )
+
+            fun ensureInstalled(context: Context, storage: LayaEngine.Storage) {
+              check(storage == LayaEngine.Storage.WFP16) {
+                "Эта сборка использует модель WFP16."
+              }
+
+              val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+              val prefs = context.getSharedPreferences("laya_downloads", Context.MODE_PRIVATE)
+              val extRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IOException("Android не предоставил папку для загрузок")
+              val downloadDir = File(extRoot, "laya").apply { mkdirs() }
+
+              files.forEach { (name, spec) ->
+                File(context.filesDir, name + ".part").delete()
+                val dest = File(context.filesDir, name)
+
+                if (isVerifiedInstalled(dest, name, spec, prefs)) return@forEach
+                if (dest.exists()) dest.delete()
+
+                val staged = File(downloadDir, name)
+                if (!isExact(staged, spec)) {
+                  downloadWithSystemManager(context, manager, prefs, name, staged, spec)
+                }
+                verify(staged, spec)
+                installAtomically(staged, dest, spec)
+                prefs.edit().putString("verified:" + name, spec.sha256).apply()
+              }
+            }
+
+            private fun isVerifiedInstalled(
+              file: File,
+              name: String,
+              spec: Spec,
+              prefs: android.content.SharedPreferences,
+            ): Boolean {
+              if (!file.isFile || file.length() != spec.size) return false
+              if (prefs.getString("verified:" + name, null) == spec.sha256) return true
+              return try {
+                verify(file, spec)
+                prefs.edit().putString("verified:" + name, spec.sha256).apply()
+                true
+              } catch (_: Throwable) {
+                false
+              }
+            }
+
+            private fun isExact(file: File, spec: Spec): Boolean {
+              if (!file.isFile || file.length() != spec.size) return false
+              return try {
+                verify(file, spec)
+                true
+              } catch (_: Throwable) {
+                false
+              }
+            }
+
+            private fun downloadWithSystemManager(
+              context: Context,
+              manager: DownloadManager,
+              prefs: android.content.SharedPreferences,
+              name: String,
+              staged: File,
+              spec: Spec,
+            ) {
+              val idKey = "download_id:" + name + ":" + spec.sha256
+              var requeues = 0
+
+              while (true) {
+                var id = prefs.getLong(idKey, -1L)
+
+                if (id < 0L) {
+                  if (staged.exists()) staged.delete()
+                  val request =
+                    DownloadManager.Request(Uri.parse(BASE + "/" + name + "?download=true"))
+                      .setTitle("Laya: " + name)
+                      .setDescription("Загрузка файла модели")
+                      .setAllowedOverMetered(true)
+                      .setAllowedOverRoaming(true)
+                      .setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                      )
+                      .setDestinationInExternalFilesDir(
+                        context,
+                        Environment.DIRECTORY_DOWNLOADS,
+                        "laya/" + name,
+                      )
+                  id = manager.enqueue(request)
+                  prefs.edit().putLong(idKey, id).apply()
+                }
+
+                val result = waitForDownload(manager, id)
+                if (result.first == DownloadManager.STATUS_SUCCESSFUL) {
+                  prefs.edit().remove(idKey).apply()
+                  verify(staged, spec)
+                  return
+                }
+
+                manager.remove(id)
+                prefs.edit().remove(idKey).apply()
+                if (staged.exists()) staged.delete()
+                requeues += 1
+                if (requeues >= MAX_REQUEUES) {
+                  throw IOException(
+                    "Android не смог скачать " + name +
+                      " после " + MAX_REQUEUES + " попыток. Код: " + result.second
+                  )
+                }
+                Thread.sleep(1500L * requeues)
+              }
+            }
+
+            private fun waitForDownload(manager: DownloadManager, id: Long): Pair<Int, Int> {
+              while (true) {
+                manager.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
+                  if (!cursor.moveToFirst()) {
+                    return DownloadManager.STATUS_FAILED to -1
+                  }
+                  val status =
+                    cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                  val reason =
+                    cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+
+                  when (status) {
+                    DownloadManager.STATUS_SUCCESSFUL,
+                    DownloadManager.STATUS_FAILED -> return status to reason
+                    DownloadManager.STATUS_PENDING,
+                    DownloadManager.STATUS_RUNNING,
+                    DownloadManager.STATUS_PAUSED -> Unit
+                    else -> return DownloadManager.STATUS_FAILED to reason
+                  }
+                }
+                Thread.sleep(1000)
+              }
+            }
+
+            private fun installAtomically(staged: File, dest: File, spec: Spec) {
+              val installing = File(dest.parentFile, dest.name + ".installing")
+              if (installing.exists()) installing.delete()
+
+              FileInputStream(staged).use { input ->
+                FileOutputStream(installing).use { output ->
+                  val buffer = ByteArray(4 * 1024 * 1024)
+                  while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                  }
+                  output.fd.sync()
+                }
+              }
+              verify(installing, spec)
+              if (dest.exists()) dest.delete()
+              check(installing.renameTo(dest)) { "Не удалось установить " + dest.name }
+              staged.delete()
+            }
+
+            private fun verify(file: File, spec: Spec) {
+              check(file.isFile) { "Файл не найден: " + file.name }
+              check(file.length() == spec.size) {
+                "Неверный размер " + file.name + ": " + file.length() + " / " + spec.size
+              }
+              val digest = MessageDigest.getInstance("SHA-256")
+              FileInputStream(file).use { input ->
+                val buffer = ByteArray(4 * 1024 * 1024)
+                while (true) {
+                  val count = input.read(buffer)
+                  if (count < 0) break
+                  digest.update(buffer, 0, count)
+                }
+              }
+              val actual = digest.digest().joinToString("") { "%02x".format(it) }
+              check(actual == spec.sha256) { "Контрольная сумма не совпала для " + file.name }
+            }
+          }
+          '''
+          source = template.replace("__REV__", rev).replace("__ENTRIES__", entries)
+          target = app / "src/main/java/com/laya/ModelDownloader.kt"
+          target.write_text(source)
+          PY
+
+          cat model-manifest.tsv
+          grep -n "DownloadManager" laya-hf/android/app/src/main/java/com/laya/ModelDownloader.kt
+
+      - name: Apply Russian UI and robust defaults
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          vm = Path("laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt")
+          text = vm.read_text()
+          text, count = re.subn(
+              r"(?m)^(\s*)val requiredFiles\s*=",
+              r"\1ModelDownloader.ensureInstalled(context, storage)\n\1val requiredFiles =",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Could not patch MainViewModel downloader hook")
+          text = text.replace(
+              'preferences.getString("accelerator", "gpu") ?: "gpu"',
+              'preferences.getString("accelerator", "cpu") ?: "cpu"',
+          )
+          vm.write_text(text)
+
+          manifest = Path("laya-hf/android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+          text = text.replace(
+              "    <application",
+              '    <uses-permission android:name="android.permission.INTERNET" />\n\n    <application',
+              1,
+          )
+          manifest.write_text(text)
+
+          strings = Path("laya-hf/android/app/src/main/res/values/strings.xml")
+          strings.write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <string name="app_name">Laya мультиязычная</string>
+            <string name="status_loading_tokenizer">Скачивание, проверка и загрузка модели…</string>
+            <string name="status_compiling_gpu">Компиляция для GPU…</string>
+            <string name="status_loading_cpu">Загрузка модели на CPU…</string>
+            <string name="status_warming_up">Прогрев модели…</string>
+            <string name="status_gpu_ready">Готово · GPU FP32</string>
+            <string name="status_cpu_ready">Готово · CPU</string>
+            <string name="status_running">Обработка вопросов…</string>
+            <string name="status_error">Модель недоступна</string>
+            <string name="status_not_installed">Модель не установлена</string>
+            <string name="status_gate_running">Запуск диагностического теста…</string>
+            <string name="status_gate_measured">Диагностика сохранена</string>
+            <string name="status_gate_failed">Диагностика завершилась ошибкой</string>
+            <string name="gate_file">Отчёт: %1$s</string>
+            <string name="error_message">%1$s</string>
+            <string name="missing_model_file">Не найден файл %1$s.</string>
+            <string name="error_nonfinite">Модель вернула некорректное значение. Попробуйте другой ускоритель.</string>
+            <string name="launch_to_ready">Запуск до готовности: %1$.2f мс</string>
+            <string name="accelerator_title">Ускоритель</string>
+            <string name="accelerator_gpu">GPU (точность FP32)</string>
+            <string name="accelerator_cpu">CPU</string>
+            <string name="use_cpu">Использовать CPU</string>
+            <string name="preset_email">Сортировка писем</string>
+            <string name="preset_triage">Запрос в поддержку</string>
+            <string name="preset_moderation">Модерация</string>
+            <string name="preset_selected">Сценарий: %1$s</string>
+            <string name="example_language">Пример</string>
+            <string name="language_japanese">RU</string>
+            <string name="language_english">EN</string>
+            <string name="email_subject">Тема</string>
+            <string name="email_body">Текст</string>
+            <string name="support_message">Сообщение в поддержку</string>
+            <string name="moderation_post">Текст для проверки</string>
+            <string name="example_email_ja_subject">Не могу прикрепить изображение после обновления</string>
+            <string name="example_email_ja_body">Здравствуйте. После вчерашнего обновления приложение закрывается, когда я прикрепляю изображение к форме поддержки. Без изображения текст отправляется нормально. Подскажите, как это проверить?</string>
+            <string name="example_email_en_subject">Cannot attach an image after the update</string>
+            <string name="example_email_en_body">Hello support,\nSince updating the app yesterday, the support form closes when I attach an image. Sending text alone still works. Could you tell me how to check this?</string>
+            <string name="example_support_ja">С меня дважды списали оплату за одну подписку. Подскажите, как вернуть лишнее списание.</string>
+            <string name="example_support_en">I was charged twice for the same subscription. Please tell me how to get the extra charge refunded.</string>
+            <string name="example_moderation_ja">Я не согласен с этим объяснением. Сегодня кнопка сохранения не сохранила мои изменения. Если кто-то сталкивался с тем же, поделитесь результатом.</string>
+            <string name="example_moderation_en">I disagree with that explanation. Today the Save button did not keep my changes. If anyone saw the same issue, please share the result.</string>
+            <string name="calibration_title">Калибровка вероятности</string>
+            <string name="calibrated">включена</string>
+            <string name="uncalibrated">T=1 (без калибровки)</string>
+            <string name="run">Запустить</string>
+            <string name="run_summary">Всего: %1$.2f мс · %2$d токенов · %3$d вопросов</string>
+            <string name="token_count_hint">Токены во всех вопросах без учёта заполнения.</string>
+            <string name="results_title">Результаты</string>
+            <string name="result_choice">Ответ: %1$s</string>
+            <string name="result_score">Оценка: %1$.4f</string>
+            <string name="result_true_probability">Вероятность True: %1$.4f</string>
+            <string name="score_legend">Шкала оценок и вероятности</string>
+            <string name="score_level">Уровень %1$d</string>
+            <string name="option_true">Да</string>
+            <string name="option_false">Нет</string>
+            <string name="option_probability" translatable="false">%1$.2f%%</string>
+            <string name="result_confidence">Уверенность: %1$.4f</string>
+            <string name="result_timing" translatable="false">%1$.2f ms</string>
+          </resources>
+          ''')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path("laya-hf/android/app/src/main/res/values/strings.xml").read_text()
+          assert "更新後" not in s
+          assert ">JA<" not in s
+          assert ">RU<" in s
+          vm = Path("laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt").read_text()
+          assert "ModelDownloader.ensureInstalled(context, storage)" in vm
+          assert 'preferences.getString("accelerator", "cpu") ?: "cpu"' in vm
+          manifest = Path("laya-hf/android/app/src/main/AndroidManifest.xml").read_text()
+          assert "android.permission.INTERNET" in manifest
+          PY
+
+      - name: Verify all upstream model files against pinned hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          REV="$(git -C laya-hf rev-parse HEAD)"
+          BASE="https://huggingface.co/litert-community/Laya-Multilingual-LiteRT/resolve/$REV"
+          mkdir -p /tmp/laya-model-check
+          while IFS=$'\t' read -r NAME SIZE SHA; do
+            curl -L --fail --retry 5 --retry-delay 2               -o "/tmp/laya-model-check/$NAME" "$BASE/$NAME?download=true"
+            test "$(stat -c%s "/tmp/laya-model-check/$NAME")" = "$SIZE"
+            echo "$SHA  /tmp/laya-model-check/$NAME" | sha256sum -c -
+          done < model-manifest.tsv
+          rm -rf /tmp/laya-model-check
+
+      - name: Install stable debug signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p laya-hf/android/.local
+          base64 -d .github/laya-stable-debug.keystore.b64 > laya-hf/android/.local/debug.keystore
+          chmod 600 laya-hf/android/.local/debug.keystore
+          keytool -list -v             -keystore laya-hf/android/.local/debug.keystore             -storepass android -alias androiddebugkey | grep 'SHA256:'
+
+      - name: Build, sign and inspect APK
+        working-directory: laya-hf/android
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ./gradlew --no-daemon clean :app:assembleDebug
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          test "$(stat -c%s "$APK")" -lt 30000000
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | grep android.permission.INTERNET
+          unzip -l "$APK" | grep -q 'com/laya'
+          sha256sum "$APK" | tee app/build/outputs/apk/debug/app-debug.apk.sha256
+          ls -lh "$APK"
+
+      - name: Upload final APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-final-ru-debug
+          path: |
+            laya-hf/android/app/build/outputs/apk/debug/app-debug.apk
+            laya-hf/android/app/build/outputs/apk/debug/app-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
