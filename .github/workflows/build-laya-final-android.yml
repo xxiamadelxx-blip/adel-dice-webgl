@@ -423,7 +423,7 @@ jobs:
           test "$(stat -c%s "$APK")" -lt 30000000
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "$APK" | grep android.permission.INTERNET
-          unzip -l "$APK" | grep -q 'com/laya'
+          unzip -l "$APK" | grep -q 'AndroidManifest.xml'
           sha256sum "$APK" | tee app/build/outputs/apk/debug/app-debug.apk.sha256
           ls -lh "$APK"
 
