@@ -1,0 +1,27 @@
+name: Inspect Laya Android source
+
+on:
+  push:
+    branches:
+      - ci/laya-source-inspect-20260922
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Clone source
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          git clone --depth 1 https://huggingface.co/litert-community/Laya-Multilingual-LiteRT.git laya-hf
+      - name: Print relevant source
+        run: |
+          echo '=== MainViewModel.kt ==='
+          sed -n '1,280p' laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt
+          echo '=== MainActivity.kt ==='
+          sed -n '1,320p' laya-hf/android/app/src/main/java/com/laya/MainActivity.kt
+          echo '=== LayaEngine.kt ==='
+          sed -n '1,360p' laya-hf/android/app/src/main/java/com/laya/LayaEngine.kt
+          echo '=== build.gradle.kts ==='
+          sed -n '1,260p' laya-hf/android/app/build.gradle.kts
