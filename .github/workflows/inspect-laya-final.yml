@@ -1,0 +1,27 @@
+name: Inspect Laya strings
+
+on:
+  push:
+    branches:
+      - ci/laya-final-inspect-20260922
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch source
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: git clone --depth 1 https://huggingface.co/litert-community/Laya-Multilingual-LiteRT.git laya-hf
+      - name: Collect source snippets
+        run: |
+          mkdir out
+          cp laya-hf/android/app/src/main/res/values/strings.xml out/strings.xml
+          cp laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt out/MainViewModel.kt
+          cp laya-hf/android/app/src/main/AndroidManifest.xml out/AndroidManifest.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: laya-source-snippets
+          path: out/
+          retention-days: 1
