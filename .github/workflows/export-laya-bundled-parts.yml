@@ -1,0 +1,67 @@
+name: Export bundled Laya APK parts
+
+on:
+  push:
+    branches:
+      - ci/laya-export-bundled-20260922
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout trigger repo
+        uses: actions/checkout@v5
+
+      - name: Download successful bundled APK artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir original
+          gh run download 35714361922             --repo "$GITHUB_REPOSITORY"             --name laya-multilingual-bundled-debug             --dir original
+          APK="$(find original -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" ./Laya-Multilingual-Bundled-debug.apk
+          ls -lh ./Laya-Multilingual-Bundled-debug.apk
+          sha256sum ./Laya-Multilingual-Bundled-debug.apk > ./Laya-Multilingual-Bundled-debug.apk.sha256
+          split -b 300M -d -a 2 ./Laya-Multilingual-Bundled-debug.apk ./Laya-Multilingual-Bundled-debug.apk.part-
+          ls -lh ./Laya-Multilingual-Bundled-debug.apk.part-*
+
+      - name: Upload part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-bundled-part-00
+          path: Laya-Multilingual-Bundled-debug.apk.part-00
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-bundled-part-01
+          path: Laya-Multilingual-Bundled-debug.apk.part-01
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-bundled-part-02
+          path: Laya-Multilingual-Bundled-debug.apk.part-02
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: laya-bundled-checksum
+          path: Laya-Multilingual-Bundled-debug.apk.sha256
+          retention-days: 7
