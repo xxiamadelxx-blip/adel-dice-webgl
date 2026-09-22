@@ -133,25 +133,32 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           vm = Path("laya-hf/android/app/src/main/java/com/laya/MainViewModel.kt")
           text = vm.read_text()
-          needle = "            try {\n                val requiredFiles ="
-          replacement = "            try {\n                BundledModelInstaller.ensureInstalled(context, storage)\n                val requiredFiles ="
           if "BundledModelInstaller.ensureInstalled(context, storage)" not in text:
-              if needle not in text:
-                  raise SystemExit("MainViewModel insertion point not found")
-              text = text.replace(needle, replacement, 1)
+              text, count = re.subn(
+                  r"(?m)^(\s*)val requiredFiles\s*=",
+                  r"\1BundledModelInstaller.ensureInstalled(context, storage)\n\1val requiredFiles =",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("MainViewModel requiredFiles insertion point not found")
           vm.write_text(text)
 
           gradle = Path("laya-hf/android/app/build.gradle.kts")
           text = gradle.read_text()
-          marker = "    buildFeatures {\n        compose = true\n        buildConfig = true\n    }"
-          replacement = marker + '\n\n    androidResources {\n        noCompress += listOf("tflite", "bin")\n    }'
           if "noCompress += listOf" not in text:
-              if marker not in text:
-                  raise SystemExit("build.gradle insertion point not found")
-              text = text.replace(marker, replacement, 1)
+              text, count = re.subn(
+                  r"(?m)^(\s*)buildFeatures\s*\{",
+                  r'\1androidResources {\n\1    noCompress += listOf("tflite", "bin")\n\1}\n\n\1buildFeatures {',
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("build.gradle buildFeatures insertion point not found")
           gradle.write_text(text)
           PY
 
